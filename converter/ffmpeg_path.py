@@ -14,6 +14,7 @@ HOMEBREW_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
 def _resolve(name: str) -> str:
+    """Return the full path to `name` in a known Homebrew bin dir, or raise."""
     for directory in HOMEBREW_BIN_DIRS:
         candidate = Path(directory) / name
         if candidate.exists():
@@ -25,8 +26,10 @@ def _resolve(name: str) -> str:
 
 
 def ffmpeg_path() -> str:
+    """Absolute path to the ffmpeg binary."""
     return _resolve("ffmpeg")
 
 
 def ffprobe_path() -> str:
+    """Absolute path to the ffprobe binary."""
     return _resolve("ffprobe")

@@ -26,5 +26,6 @@ class Job:
     output_path: str = field(default="")
 
     def __post_init__(self) -> None:
+        """Default the output path to `<name>_h264.mp4` when none was given."""
         if not self.output_path:
             self.output_path = default_output_path(self.input_path)
