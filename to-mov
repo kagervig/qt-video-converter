@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# to-mov — convert one or more video files to muted H.264 .mov
+#
+# Usage:
+#   ./to-mov input1.mp4 input2.avi ...
+#   ./to-mov -o out_dir input1.mp4 ...
+#
+# Each input is re-encoded to H.264 video with the audio track dropped,
+# in a .mov container. Output is written to a "converted" subfolder of
+# the input's directory (or of -o dir), created if needed, as <name>.mov.
+
+set -euo pipefail
+
+CRF=18            # quality: lower = better/larger (18 is visually lossless-ish)
+PRESET=medium     # encode speed/size tradeoff
+
+usage() {
+  grep '^#' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+out_dir=""
+while getopts ":o:h" opt; do
+  case "$opt" in
+    o) out_dir="$OPTARG" ;;
+    h) usage 0 ;;
+    *) usage 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -eq 0 ]; then
+  echo "error: no input files given" >&2
+  usage 1
+fi
+
+for input in "$@"; do
+  if [ ! -f "$input" ]; then
+    echo "skip: not a file: $input" >&2
+    continue
+  fi
+
+  base=$(basename "$input")
+  name="${base%.*}"
+
+  target_dir="${out_dir:-$(dirname "$input")}/converted"
+  mkdir -p "$target_dir"
+  output="$target_dir/$name.mov"
+
+  echo ">> $input -> $output"
+  ffmpeg -hide_banner -loglevel warning -stats -y \
+    -i "$input" \
+    -c:v libx264 -preset "$PRESET" -crf "$CRF" -pix_fmt yuv420p \
+    -an \
+    -movflags +faststart \
+    "$output"
+done
+
+echo "done."
