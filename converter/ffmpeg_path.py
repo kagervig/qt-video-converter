@@ -4,25 +4,37 @@ During development we find the Homebrew binaries directly. We deliberately do
 NOT trust PATH: a macOS .app bundle launched from Finder does not inherit your
 shell PATH, so relying on it would break the packaged app.
 
-M9 extends this to prefer a binary bundled inside the frozen .app (relative to
-sys._MEIPASS) before falling back to these Homebrew locations.
+When frozen by PyInstaller we prefer a binary bundled inside the app (under
+sys._MEIPASS), falling back to these Homebrew locations for development.
 """
 
+import sys
 from pathlib import Path
 
 HOMEBREW_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
+def _bundled_dir() -> Path | None:
+    """The directory PyInstaller unpacks bundled files into, or None if not frozen."""
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else None
+
+
 def _resolve(name: str) -> str:
-    """Return the full path to `name` in a known Homebrew bin dir, or raise."""
-    for directory in HOMEBREW_BIN_DIRS:
-        candidate = Path(directory) / name
+    """Return the full path to `name`, preferring a bundled copy, or raise."""
+    search_dirs: list[Path] = []
+    bundled = _bundled_dir()
+    if bundled is not None:
+        search_dirs.append(bundled)
+    search_dirs.extend(Path(d) for d in HOMEBREW_BIN_DIRS)
+
+    for directory in search_dirs:
+        candidate = directory / name
         if candidate.exists():
             return str(candidate)
     raise FileNotFoundError(
         f"Could not find '{name}'. Install it with: brew install ffmpeg"
     )
-    # TODO(M9): check a bundled copy (sys._MEIPASS) before the Homebrew dirs.
 
 
 def ffmpeg_path() -> str:

@@ -11,15 +11,18 @@ from pathlib import Path
 # Default encode settings (see build plan). Pulled out as constants so there
 # are no magic values buried in the argument list.
 VIDEO_CODEC = "libx264"
-CRF = "23"
+DEFAULT_CRF = 23
 PRESET = "medium"
 AUDIO_CODEC = "copy"
 OUTPUT_SUFFIX = "_h264"
 
 
-def build_encode_args(input_path: str, output_path: str) -> list[str]:
+def build_encode_args(
+    input_path: str, output_path: str, crf: int = DEFAULT_CRF
+) -> list[str]:
     """Arguments to transcode H.265 -> H.264 MP4.
 
+    crf               quality level (lower = better/larger); 18-28 is typical
     -tag:v avc1       mark the stream so QuickTime recognizes it as H.264
     -movflags +faststart  move the moov atom to the front for streaming
     -progress pipe:1  emit machine-readable progress on stdout (parsed in M3)
@@ -29,7 +32,7 @@ def build_encode_args(input_path: str, output_path: str) -> list[str]:
         "-y",
         "-i", input_path,
         "-c:v", VIDEO_CODEC,
-        "-crf", CRF,
+        "-crf", str(crf),
         "-preset", PRESET,
         "-c:a", AUDIO_CODEC,
         "-tag:v", "avc1",
@@ -50,7 +53,9 @@ def build_probe_args(input_path: str) -> list[str]:
     ]
 
 
-def default_output_path(input_path: str) -> str:
-    """`<name>_h264.mp4` next to the source. Never equals the source path."""
+def default_output_path(input_path: str, output_dir: str | None = None) -> str:
+    """`<name>_h264.mp4` in `output_dir`, or next to the source when unset."""
     source = Path(input_path)
-    return str(source.with_name(f"{source.stem}{OUTPUT_SUFFIX}.mp4"))
+    name = f"{source.stem}{OUTPUT_SUFFIX}.mp4"
+    folder = Path(output_dir) if output_dir else source.parent
+    return str(folder / name)

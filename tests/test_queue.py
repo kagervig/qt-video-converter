@@ -17,31 +17,49 @@ class FakeRunner(QObject):
     progress = Signal(int)
     finished = Signal()
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.started: list[Job] = []
+        self.cancel_calls = 0
 
     def start(self, job: Job) -> None:
         self.started.append(job)
 
+    def cancel(self) -> None:
+        self.cancel_calls += 1
 
-def test_adding_a_job_marks_it_encoding():
+
+def test_adding_a_job_does_not_start_it():
     runner = FakeRunner()
     queue = JobQueue(runner=runner)
     job = Job(input_path="/a.mp4")
 
     queue.add(job)
+
+    assert job.status == JobStatus.PENDING
+    assert runner.started == []
+
+
+def test_starting_marks_the_first_job_encoding():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+    job = Job(input_path="/a.mp4")
+    queue.add(job)
+
+    queue.start()
 
     assert job.status == JobStatus.ENCODING
 
 
-def test_adding_a_job_starts_the_runner():
+def test_starting_runs_the_first_job():
     runner = FakeRunner()
     queue = JobQueue(runner=runner)
     job = Job(input_path="/a.mp4")
-
     queue.add(job)
+
+    queue.start()
 
     assert runner.started == [job]
 
@@ -51,8 +69,9 @@ def test_second_job_waits_while_first_encodes():
     queue = JobQueue(runner=runner)
     queue.add(Job(input_path="/a.mp4"))
     second = Job(input_path="/b.mp4")
-
     queue.add(second)
+
+    queue.start()
 
     assert second.status == JobStatus.PENDING
 
@@ -62,6 +81,7 @@ def test_finishing_marks_the_job_done():
     queue = JobQueue(runner=runner)
     job = Job(input_path="/a.mp4")
     queue.add(job)
+    queue.start()
 
     runner.finished.emit()
 
@@ -75,6 +95,7 @@ def test_finishing_starts_the_next_pending_job():
     second = Job(input_path="/b.mp4")
     queue.add(first)
     queue.add(second)
+    queue.start()
 
     runner.finished.emit()
 
@@ -86,6 +107,7 @@ def test_failure_marks_the_job_failed():
     queue = JobQueue(runner=runner)
     job = Job(input_path="/a.mp4")
     queue.add(job)
+    queue.start()
 
     runner.failed.emit("boom")
 
@@ -99,10 +121,70 @@ def test_failure_still_starts_the_next_job():
     second = Job(input_path="/b.mp4")
     queue.add(first)
     queue.add(second)
+    queue.start()
 
     runner.failed.emit("boom")
 
     assert second.status == JobStatus.ENCODING
+
+
+def test_failure_records_the_error_on_the_job():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+    job = Job(input_path="/a.mp4")
+    queue.add(job)
+    queue.start()
+
+    runner.failed.emit("ffmpeg: boom")
+
+    assert job.error == "ffmpeg: boom"
+
+
+def test_cancel_requests_the_runner_to_cancel():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+    job = Job(input_path="/a.mp4")
+    queue.add(job)
+    queue.start()
+
+    queue.cancel()
+
+    assert runner.cancel_calls == 1
+
+
+def test_cancel_when_idle_does_nothing():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+
+    queue.cancel()
+
+    assert runner.cancel_calls == 0
+
+
+def test_cancelling_marks_the_current_job_cancelled():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+    job = Job(input_path="/a.mp4")
+    queue.add(job)
+    queue.start()
+
+    runner.cancelled.emit()
+
+    assert job.status == JobStatus.CANCELLED
+
+
+def test_cancelling_does_not_start_the_next_job():
+    runner = FakeRunner()
+    queue = JobQueue(runner=runner)
+    first = Job(input_path="/a.mp4")
+    second = Job(input_path="/b.mp4")
+    queue.add(first)
+    queue.add(second)
+    queue.start()
+
+    runner.cancelled.emit()
+
+    assert second.status == JobStatus.PENDING
 
 
 def test_progress_updates_the_current_job():
@@ -110,6 +192,7 @@ def test_progress_updates_the_current_job():
     queue = JobQueue(runner=runner)
     job = Job(input_path="/a.mp4")
     queue.add(job)
+    queue.start()
 
     runner.progress.emit(42)
 
@@ -119,7 +202,8 @@ def test_progress_updates_the_current_job():
 def test_job_added_mid_queue_is_processed_after_current():
     runner = FakeRunner()
     queue = JobQueue(runner=runner)
-    queue.add(Job(input_path="/a.mp4"))  # starts encoding
+    queue.add(Job(input_path="/a.mp4"))
+    queue.start()  # first starts encoding
     late = Job(input_path="/b.mp4")
     queue.add(late)  # appended while busy
 

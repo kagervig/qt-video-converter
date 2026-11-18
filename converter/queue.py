@@ -32,11 +32,20 @@ class JobQueue(QObject):
         self._runner.progress.connect(self._on_progress)
         self._runner.finished.connect(self._on_finished)
         self._runner.failed.connect(self._on_failed)
+        self._runner.cancelled.connect(self._on_cancelled)
 
     def add(self, job: Job) -> None:
-        """Enqueue a job; start it now if nothing is currently encoding."""
+        """Enqueue a job as Pending. Call start() to begin processing."""
         self._jobs.append(job)
+
+    def start(self) -> None:
+        """Begin processing Pending jobs; no-op if one is already encoding."""
         self._start_next_if_idle()
+
+    def cancel(self) -> None:
+        """Cancel the current encode; remaining jobs stay Pending."""
+        if self._current is not None:
+            self._runner.cancel()
 
     def _start_next_if_idle(self) -> None:
         """Begin the first Pending job, unless one is already encoding."""
@@ -77,6 +86,14 @@ class JobQueue(QObject):
         """Mark the current job Failed, then advance to the next Pending one."""
         assert self._current is not None
         self._current.status = JobStatus.FAILED
+        self._current.error = message
         self.job_changed.emit(self._current)
         self._current = None
         self._start_next_if_idle()
+
+    def _on_cancelled(self) -> None:
+        """Mark the current job Cancelled and halt; Start resumes the rest."""
+        assert self._current is not None
+        self._current.status = JobStatus.CANCELLED
+        self.job_changed.emit(self._current)
+        self._current = None

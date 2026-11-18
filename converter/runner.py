@@ -12,6 +12,8 @@ The flow is two processes in sequence: ffprobe (read duration) then ffmpeg
 (encode). We chain them by starting ffmpeg from ffprobe's finished handler.
 """
 
+from pathlib import Path
+
 from PySide6.QtCore import QObject, QProcess, Signal
 
 from converter.ffmpeg_cmd import build_encode_args, build_probe_args
@@ -29,6 +31,7 @@ class JobRunner(QObject):
     progress = Signal(int)   # 0-100
     finished = Signal()      # encode completed successfully
     failed = Signal(str)     # encode failed; payload is an error message
+    cancelled = Signal()     # encode was cancelled by the user
 
     def __init__(self, parent: QObject | None = None) -> None:
         """Set up empty state. No process runs until start() is called."""
@@ -38,11 +41,23 @@ class JobRunner(QObject):
         self._duration_s: float = 0.0  # from ffprobe; drives the progress math
         self._stdout_buffer: str = ""  # holds a partial trailing line between reads
         self._last_percent: int = -1   # avoid emitting the same value repeatedly
+        self._stderr: str = ""         # accumulated ffmpeg stderr for error logs
+        self._cancelled: bool = False  # set by cancel(); turns exit into a cancel
 
     def start(self, job: Job) -> None:
         """Probe the duration, then (on probe finish) start the encode."""
         self._job = job
+        self._cancelled = False
         self._run_probe(job)
+
+    def cancel(self) -> None:
+        """Kill the running process; the partial output is removed on exit."""
+        self._cancelled = True
+        if (
+            self._process is not None
+            and self._process.state() != QProcess.ProcessState.NotRunning
+        ):
+            self._process.kill()
 
     def _run_probe(self, job: Job) -> None:
         """Launch ffprobe to read the clip's duration (needed for % progress)."""
@@ -52,6 +67,9 @@ class JobRunner(QObject):
 
     def _on_probe_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
         """Store the duration ffprobe printed, then start the encode."""
+        if self._cancelled:
+            self._finish_cancelled()
+            return
         output = bytes(self._process.readAllStandardOutput()).decode().strip()
         try:
             self._duration_s = float(output)
@@ -64,12 +82,21 @@ class JobRunner(QObject):
         """Launch ffmpeg and wire up its stdout (progress) and exit signals."""
         self._process = QProcess(self)
         self._stdout_buffer = ""
+        self._stderr = ""
         self._last_percent = -1
         self._process.finished.connect(self._on_encode_finished)
         self._process.readyReadStandardOutput.connect(self._on_ready_read)
+        self._process.readyReadStandardError.connect(self._on_ready_read_stderr)
         self._process.start(
-            ffmpeg_path(), build_encode_args(job.input_path, job.output_path)
+            ffmpeg_path(),
+            build_encode_args(job.input_path, job.output_path, job.crf),
         )
+
+    def _on_ready_read_stderr(self) -> None:
+        """Accumulate ffmpeg's stderr so we can report it if the encode fails."""
+        self._stderr += bytes(
+            self._process.readAllStandardError()
+        ).decode(errors="replace")
 
     def _on_ready_read(self) -> None:
         """Called whenever ffmpeg has written more to stdout (the -progress stream).
@@ -101,11 +128,20 @@ class JobRunner(QObject):
     def _on_encode_finished(
         self, exit_code: int, status: QProcess.ExitStatus
     ) -> None:
-        """Emit finished on a clean exit, else failed with ffmpeg's stderr."""
+        """Report cancellation, success, or failure once ffmpeg exits."""
+        if self._cancelled:
+            self._finish_cancelled()
+            return
         if exit_code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.finished.emit()
         else:
-            stderr = bytes(self._process.readAllStandardError()).decode()
-            self.failed.emit(stderr or f"ffmpeg exited with code {exit_code}")
+            self._stderr += bytes(
+                self._process.readAllStandardError()
+            ).decode(errors="replace")
+            self.failed.emit(self._stderr or f"ffmpeg exited with code {exit_code}")
 
-    # TODO(M7): cancel() — kill the process and delete the partial output.
+    def _finish_cancelled(self) -> None:
+        """Remove the partial output file and report the cancellation."""
+        if self._job is not None:
+            Path(self._job.output_path).unlink(missing_ok=True)
+        self.cancelled.emit()

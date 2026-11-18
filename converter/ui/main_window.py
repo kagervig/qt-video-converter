@@ -9,8 +9,10 @@ from pathlib import Path
 
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QHeaderView,
     QMainWindow,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -19,8 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from converter.job import Job
+from converter.ffmpeg_cmd import default_output_path
+from converter.job import Job, JobStatus
 from converter.queue import JobQueue
+from converter.settings import Settings
+from converter.ui.settings_dialog import SettingsDialog
 
 WINDOW_TITLE = "H.264 Converter"
 MIN_WIDTH = 600
@@ -35,6 +40,9 @@ COL_STATUS = 1
 COL_PROGRESS = 2
 COLUMN_HEADERS = ["File", "Status", "Progress"]
 
+# How many trailing stderr lines to show in the log pane when a job fails.
+LOG_TAIL_LINES = 20
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -45,6 +53,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)  # without this, drops are rejected by Qt
 
         self._jobs: list[Job] = []  # row i in the table corresponds to _jobs[i]
+        self._settings = Settings()  # persisted output folder + CRF
 
         # The queue owns job state; we just reflect its job_changed signal.
         self._queue = JobQueue(parent=self)
@@ -60,10 +69,38 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         layout = QVBoxLayout(central_widget)
         layout.addWidget(self._table)
-        self._start_button = QPushButton("start encoding")
+
+        button_row = QHBoxLayout()
+        self._start_button = QPushButton("Start Encoding")
         self._start_button.clicked.connect(self._on_start_encoding_clicked)
-        layout.addWidget(self._start_button)
+        self._cancel_button = QPushButton("Cancel")
+        self._cancel_button.clicked.connect(self._on_cancel_clicked)
+        self._settings_button = QPushButton("Settings…")
+        self._settings_button.clicked.connect(self._on_settings_clicked)
+        button_row.addWidget(self._start_button)
+        button_row.addWidget(self._cancel_button)
+        button_row.addStretch()  # push Settings to the right
+        button_row.addWidget(self._settings_button)
+        layout.addLayout(button_row)
+
+        # Collapsible error log: hidden until a job fails.
+        self._log_toggle = QPushButton("Show log")
+        self._log_toggle.setCheckable(True)
+        self._log_toggle.toggled.connect(self._on_log_toggled)
+        layout.addWidget(self._log_toggle)
+        self._log = QPlainTextEdit()
+        self._log.setReadOnly(True)
+        self._log.hide()
+        layout.addWidget(self._log)
+
         self.setCentralWidget(central_widget)
+
+        self._update_buttons()  # Start disabled until a Pending job is added
+
+    def _on_log_toggled(self, shown: bool) -> None:
+        """Show or hide the error log pane and update the toggle label."""
+        self._log.setVisible(shown)
+        self._log_toggle.setText("Hide log" if shown else "Show log")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Accept the drag only if it carries file paths."""
@@ -83,10 +120,12 @@ class MainWindow(QMainWindow):
         if any(job.input_path == path for job in self._jobs):
             return  # ignore duplicates already in the table
 
-        job = Job(input_path=path)
+        output_path = default_output_path(path, self._settings.output_dir or None)
+        job = Job(input_path=path, output_path=output_path, crf=self._settings.crf)
         self._jobs.append(job)
         self._append_row(job)
-        self._queue.add(job)  # may start encoding immediately if idle
+        self._queue.add(job)  # enqueue as Pending; Start button begins encoding
+        self._update_buttons()
 
     def _append_row(self, job: Job) -> None:
         """Render one Job as a table row: file name, status, progress bar."""
@@ -112,6 +151,32 @@ class MainWindow(QMainWindow):
 
         self._table.item(row, COL_STATUS).setText(job.status.value)
         self._table.cellWidget(row, COL_PROGRESS).setValue(job.progress)
+        if job.status == JobStatus.FAILED and job.error:
+            self._append_log(job)
+        self._update_buttons()
+
+    def _append_log(self, job: Job) -> None:
+        """Show the last few stderr lines for a failed job and reveal the log."""
+        tail = "\n".join(job.error.strip().splitlines()[-LOG_TAIL_LINES:])
+        name = Path(job.input_path).name
+        self._log.appendPlainText(f"--- {name} failed ---\n{tail}\n")
+        self._log_toggle.setChecked(True)  # reveals the pane via _on_log_toggled
+
+    def _update_buttons(self) -> None:
+        """Start enabled when a job is Pending and idle; Cancel only while encoding."""
+        has_pending = any(j.status == JobStatus.PENDING for j in self._jobs)
+        is_encoding = any(j.status == JobStatus.ENCODING for j in self._jobs)
+        self._start_button.setEnabled(has_pending and not is_encoding)
+        self._cancel_button.setEnabled(is_encoding)
 
     def _on_start_encoding_clicked(self) -> None:
-        pass
+        """Start processing the queued Pending jobs."""
+        self._queue.start()
+
+    def _on_cancel_clicked(self) -> None:
+        """Cancel the job currently encoding."""
+        self._queue.cancel()
+
+    def _on_settings_clicked(self) -> None:
+        """Open the modal settings dialog; new settings apply to future drops."""
+        SettingsDialog(self._settings, self).exec()

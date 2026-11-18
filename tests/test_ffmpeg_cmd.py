@@ -28,6 +28,16 @@ def test_encode_args_emit_machine_progress():
     assert args[args.index("-progress") + 1] == "pipe:1"
 
 
+def test_encode_args_default_crf_is_23():
+    args = build_encode_args("in.mov", "out.mp4")
+    assert args[args.index("-crf") + 1] == "23"
+
+
+def test_encode_args_use_given_crf():
+    args = build_encode_args("in.mov", "out.mp4", crf=18)
+    assert args[args.index("-crf") + 1] == "18"
+
+
 def test_probe_args_request_duration():
     args = build_probe_args("/videos/clip.mov")
     assert "format=duration" in args
@@ -41,3 +51,7 @@ def test_default_output_path_is_sibling_with_suffix():
 def test_default_output_path_never_equals_source():
     source = "/videos/clip.mp4"
     assert default_output_path(source) != source
+
+
+def test_default_output_path_uses_output_dir_when_given():
+    assert default_output_path("/videos/clip.mov", "/exports") == "/exports/clip_h264.mp4"
